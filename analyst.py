@@ -13,6 +13,53 @@ logger = logging.getLogger(__name__)
 GROQ_API_KEY: str = os.environ.get("GROQ_API_KEY", "")
 GROQ_MODEL: str = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 
+# Keywords that identify non-chat models to skip when auto-selecting
+_NON_CHAT_KEYWORDS = {"whisper", "guard", "tts", "vision", "distil", "embed"}
+
+_selected_model: Optional[str] = None
+_model_selected_at: float = 0.0
+_MODEL_CACHE_TTL = 86400.0  # re-query once per day
+
+
+def _auto_select_model(api_key: str) -> str:
+    """Query Groq for available models and return the best chat model.
+
+    Prefers the newest large model (≥70B). Falls back to GROQ_MODEL on any error.
+    Result is cached for 24 hours so startup is fast on repeat requests.
+    """
+    global _selected_model, _model_selected_at
+
+    if _selected_model and (time.time() - _model_selected_at) < _MODEL_CACHE_TTL:
+        return _selected_model
+
+    try:
+        from groq import Groq
+        client = Groq(api_key=api_key)
+        models_page = client.models.list()
+        all_models = list(models_page.data)
+
+        chat_models = [
+            m for m in all_models
+            if not any(kw in m.id.lower() for kw in _NON_CHAT_KEYWORDS)
+        ]
+
+        if not chat_models:
+            return GROQ_MODEL
+
+        chat_models.sort(key=lambda m: getattr(m, "created", 0), reverse=True)
+
+        # Prefer large models (70b, 72b, 405b) over smaller ones
+        large = [m for m in chat_models if any(s in m.id for s in ("70b", "72b", "405b", "90b"))]
+        chosen = (large[0] if large else chat_models[0]).id
+
+        _selected_model = chosen
+        _model_selected_at = time.time()
+        logger.info("Auto-selected Groq model: %s", chosen)
+        return chosen
+    except Exception as exc:
+        logger.warning("Model auto-select failed (%s), using fallback: %s", exc, GROQ_MODEL)
+        return GROQ_MODEL
+
 EXPERT_SYSTEM_PROMPT = """\
 ТЫ — ЭКСПЕРТ ПО СОЗДАНИЮ СЕЛЬСКОХОЗЯЙСТВЕННЫХ ПРЕДПРИЯТИЙ И СПЕЦИАЛИСТ ПО ДИСТАНЦИОННОМУ ЗОНДИРОВАНИЮ ЗЕМЛИ.
 Твоя роль: Главный агроном + почвовед + аналитик. Ты анализируешь реальные данные и формируешь профессиональные агрономические выводы.
@@ -42,11 +89,12 @@ def ask_expert(prompt: str, api_key: str, max_tokens: int = 2000) -> str:
         return "Ошибка: GROQ_API_KEY не задан."
 
     client = Groq(api_key=api_key)
+    model = _auto_select_model(api_key)
 
     for attempt in range(2):
         try:
             completion = client.chat.completions.create(
-                model=GROQ_MODEL,
+                model=model,
                 messages=[
                     {"role": "system", "content": EXPERT_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
