@@ -12,6 +12,8 @@ import logging
 import re
 from typing import Dict, List, Optional
 
+from aiohttp import web as aiohttp_web
+
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -625,7 +627,17 @@ async def coords_message_handler(update: Update, context: ContextTypes.DEFAULT_T
 # ---------------------------------------------------------------------------
 
 async def post_init(application: Application) -> None:
-    """Register bot commands and set menu button so users see a clickable Start."""
+    """Register bot commands, set menu button, and start health-check HTTP server."""
+    # Health-check server so Render's free Web Service tier doesn't kill the process
+    port = int(os.environ.get("PORT", 10000))
+    health_app = aiohttp_web.Application()
+    health_app.router.add_get("/", lambda r: aiohttp_web.Response(text="OK"))
+    health_app.router.add_get("/health", lambda r: aiohttp_web.Response(text="OK"))
+    runner = aiohttp_web.AppRunner(health_app)
+    await runner.setup()
+    await aiohttp_web.TCPSite(runner, "0.0.0.0", port).start()
+    logger.info("Health-check server listening on port %d", port)
+
     commands = [
         BotCommand("start", "Начать / главное меню"),
         BotCommand("analyze", "Анализировать поля"),
