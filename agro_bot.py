@@ -644,11 +644,13 @@ async def post_init(application: Application) -> None:
 def main() -> None:
     """Entry point — build and run the bot."""
     if not BOT_TOKEN:
-        raise ValueError(
-            "AGRO_BOT_TOKEN не задан. "
-            "Установите переменную окружения AGRO_BOT_TOKEN."
-        )
+        logger.critical("AGRO_BOT_TOKEN не задан — бот не может запуститься.")
+        raise ValueError("AGRO_BOT_TOKEN не задан.")
 
+    if not GROQ_API_KEY:
+        logger.warning("GROQ_API_KEY не задан — AI-анализ будет недоступен.")
+
+    logger.info("Инициализация приложения...")
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     # Callback routing table
@@ -720,9 +722,8 @@ def main() -> None:
     app.add_handler(conv)
     app.add_handler(CommandHandler("help", help_command))
 
-    # Deployment: webhook on Render, polling locally
-    print("🤖 Запуск в режиме polling...")
-    app.run_polling()
+    logger.info("Запуск в режиме polling...")
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
