@@ -420,9 +420,11 @@ async def _run_analysis(
     async def _heartbeat() -> None:
         messages = [
             "🌍 Запрашиваю климат и рельеф...",
-            "🪱 Получаю данные о почве (это самый долгий шаг)...",
+            "🪱 Получаю данные о почве...",
             "🗺️ Проверяю инфраструктуру и кадастр...",
-            "🤖 Почти готово, финализирую данные...",
+            "🤖 Данные собраны, подключаю ИИ-агронома...",
+            "📝 ИИ составляет отчёт, ещё немного...",
+            "⏳ Заканчиваю анализ...",
         ]
         for msg in messages:
             await asyncio.sleep(30)
@@ -459,7 +461,12 @@ async def _run_analysis(
             text=f"📝 Составляю отчёт для: {field_name}...",
         )
         try:
-            report = generate_field_report(field_data, GROQ_API_KEY)
+            report = await asyncio.wait_for(
+                asyncio.to_thread(generate_field_report, field_data, GROQ_API_KEY),
+                timeout=120.0,
+            )
+        except asyncio.TimeoutError:
+            report = "⏱ Превышено время ожидания ответа от ИИ (2 мин). Попробуйте ещё раз."
         except Exception as exc:
             logger.exception("generate_field_report failed for %s", field_id)
             report = f"Ошибка при генерации отчёта: {exc}"
@@ -477,7 +484,12 @@ async def _run_analysis(
             text="🔍 Составляю сравнительный анализ участков...",
         )
         try:
-            conclusion = generate_conclusion(all_data, GROQ_API_KEY)
+            conclusion = await asyncio.wait_for(
+                asyncio.to_thread(generate_conclusion, all_data, GROQ_API_KEY),
+                timeout=120.0,
+            )
+        except asyncio.TimeoutError:
+            conclusion = "⏱ Превышено время ожидания сравнительного анализа (2 мин)."
         except Exception as exc:
             logger.exception("generate_conclusion failed")
             conclusion = f"Ошибка при генерации сравнительного анализа: {exc}"

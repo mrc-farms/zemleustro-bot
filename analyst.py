@@ -34,7 +34,7 @@ def _auto_select_model(api_key: str) -> str:
 
     try:
         from groq import Groq
-        client = Groq(api_key=api_key)
+        client = Groq(api_key=api_key, timeout=30.0)
         models_page = client.models.list()
         all_models = list(models_page.data)
 
@@ -88,7 +88,7 @@ def ask_expert(prompt: str, api_key: str, max_tokens: int = 2000) -> str:
     if not api_key:
         return "Ошибка: GROQ_API_KEY не задан."
 
-    client = Groq(api_key=api_key)
+    client = Groq(api_key=api_key, timeout=90.0)
     model = _auto_select_model(api_key)
 
     for attempt in range(2):
