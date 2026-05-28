@@ -6,6 +6,7 @@ AI: Groq llama-3.3-70b-versatile.
 """
 
 import os
+import gc
 import json
 import asyncio
 import logging
@@ -451,6 +452,7 @@ async def _run_analysis(
         return MAIN_MENU
 
     heartbeat_task.cancel()
+    gc.collect()
     await context.bot.send_message(
         chat_id=chat_id,
         text="📊 Данные собраны. Генерирую агрономический анализ...",
@@ -479,6 +481,8 @@ async def _run_analysis(
                 await context.bot.send_message(chat_id=chat_id, text=chunk)
             except Exception as exc:
                 logger.error("Failed to send report chunk: %s", exc)
+        del report
+        gc.collect()
 
     if len(all_data) > 1:
         await context.bot.send_message(
