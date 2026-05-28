@@ -32,7 +32,7 @@ from telegram.ext import (
     ConversationHandler,
 )
 
-from collector import collect_multiple_fields
+from collector import collect_field_data, collect_multiple_fields
 from analyst import generate_field_report, generate_region_summary, generate_conclusion
 
 # ---------------------------------------------------------------------------
@@ -438,60 +438,62 @@ async def _run_analysis(
 
     heartbeat_task = asyncio.create_task(_heartbeat())
 
-    try:
-        all_data = await collect_multiple_fields(fields, years=years)
-    except Exception as exc:
-        logger.exception("collect_multiple_fields failed")
-        heartbeat_task.cancel()
+    # Process fields one at a time: collect → report → free memory → next field
+    # This keeps only one field's data in RAM at a time instead of all fields at once.
+    summary_data: Dict = {}
+    for i, field in enumerate(fields):
+        field_id = f"Field_{i + 1}"
+        try:
+            field_data = await collect_field_data(
+                field["lat"], field["lon"], field["name"], years
+            )
+        except Exception as exc:
+            logger.exception("collect_field_data failed for %s", field["name"])
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ Не удалось собрать данные для {field['name']}: {exc}",
+            )
+            continue
+
+        summary_data[field_id] = field_data
+
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"❌ Ошибка при сборе данных: {exc}\n\nПопробуйте ещё раз.",
-            reply_markup=get_main_menu_kb(),
-        )
-        clear_session(user.id)
-        return MAIN_MENU
-
-    heartbeat_task.cancel()
-    gc.collect()
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text="📊 Данные собраны. Генерирую агрономический анализ...",
-    )
-
-    for field_id, field_data in all_data.items():
-        field_name = field_data.get("meta", {}).get("name", field_id)
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"📝 Составляю отчёт для: {field_name}...",
+            text=f"📝 Составляю отчёт для: {field['name']}...",
         )
         try:
             report = await asyncio.wait_for(
-                asyncio.to_thread(generate_field_report, field_data, GROQ_API_KEY),
+                generate_field_report(field_data, GROQ_API_KEY),
                 timeout=120.0,
             )
         except asyncio.TimeoutError:
-            report = "⏱ Превышено время ожидания ответа от ИИ (2 мин). Попробуйте ещё раз."
+            report = "⏱ Превышено время ожидания ответа от ИИ (2 мин)."
         except Exception as exc:
             logger.exception("generate_field_report failed for %s", field_id)
             report = f"Ошибка при генерации отчёта: {exc}"
 
-        header = f"🌾 ОТЧЁТ: {field_name}\n{'═' * 40}\n\n"
+        header = f"🌾 ОТЧЁТ: {field['name']}\n{'═' * 40}\n\n"
         for chunk in split_message(header + report, max_len=4000):
             try:
                 await context.bot.send_message(chat_id=chat_id, text=chunk)
             except Exception as exc:
                 logger.error("Failed to send report chunk: %s", exc)
+
+        # Free raw data immediately after report is sent
+        field_data["raw"] = {}
         del report
         gc.collect()
 
-    if len(all_data) > 1:
+    heartbeat_task.cancel()
+
+    if len(summary_data) > 1:
         await context.bot.send_message(
             chat_id=chat_id,
             text="🔍 Составляю сравнительный анализ участков...",
         )
         try:
             conclusion = await asyncio.wait_for(
-                asyncio.to_thread(generate_conclusion, all_data, GROQ_API_KEY),
+                generate_conclusion(summary_data, GROQ_API_KEY),
                 timeout=120.0,
             )
         except asyncio.TimeoutError:

@@ -489,7 +489,7 @@ HW_RU = {
 }
 
 
-async def overpass_query(session: aiohttp.ClientSession, query: str, timeout: int = 45) -> List[Dict]:
+async def overpass_query(session: aiohttp.ClientSession, query: str, timeout: int = 15) -> List[Dict]:
     """POST an Overpass QL query with failover across multiple servers."""
     data = {"data": query}
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
@@ -531,12 +531,12 @@ async def get_nearest_node(
     Returns (distance_metres, way_tags) or (None, {}).
     """
     query = (
-        f"[out:json][timeout:55];"
+        f"[out:json][timeout:13];"
         f"(way[{tag_filter}](around:{radius},{lat},{lon});>;);"
         f"out body;"
     )
     try:
-        elements = await overpass_query(session, query, timeout=60)
+        elements = await overpass_query(session, query, timeout=15)
         if not elements:
             return None, {}
 
@@ -590,11 +590,11 @@ async def fetch_osm_infrastructure(session: aiohttp.ClientSession, lat: float, l
         pipeline_task = get_nearest_node(session, lat, lon, '"man_made"="pipeline"]["substance"="gas"', radius=20000)
 
         settlements_query = (
-            f"[out:json][timeout:55];"
+            f"[out:json][timeout:13];"
             f'(node["place"~"city|town|village"](around:50000,{lat},{lon}););'
             f"out body;"
         )
-        settlements_task = overpass_query(session, settlements_query, timeout=60)
+        settlements_task = overpass_query(session, settlements_query, timeout=15)
 
         (road_dist, road_tags), (power_dist, _), (water_dist, _), (pipeline_dist, _), settlements = (
             await asyncio.gather(road_task, power_task, water_task, pipeline_task, settlements_task)

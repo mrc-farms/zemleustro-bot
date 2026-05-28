@@ -4,6 +4,7 @@ Uses llama-3.3-70b-versatile via Groq API to generate field reports.
 """
 
 import os
+import asyncio
 import time
 import logging
 from typing import Dict, List, Optional
@@ -13,42 +14,34 @@ logger = logging.getLogger(__name__)
 GROQ_API_KEY: str = os.environ.get("GROQ_API_KEY", "")
 GROQ_MODEL: str = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 
-# Keywords that identify non-chat models to skip when auto-selecting
 _NON_CHAT_KEYWORDS = {"whisper", "guard", "tts", "vision", "distil", "embed"}
 
 _selected_model: Optional[str] = None
 _model_selected_at: float = 0.0
-_MODEL_CACHE_TTL = 86400.0  # re-query once per day
+_MODEL_CACHE_TTL = 86400.0
 
 
-def _auto_select_model(api_key: str) -> str:
-    """Query Groq for available models and return the best chat model.
-
-    Prefers the newest large model (≥70B). Falls back to GROQ_MODEL on any error.
-    Result is cached for 24 hours so startup is fast on repeat requests.
-    """
+async def _auto_select_model(api_key: str) -> str:
+    """Query Groq for available models asynchronously; cache for 24 h."""
     global _selected_model, _model_selected_at
 
     if _selected_model and (time.time() - _model_selected_at) < _MODEL_CACHE_TTL:
         return _selected_model
 
     try:
-        from groq import Groq
-        client = Groq(api_key=api_key, timeout=30.0)
-        models_page = client.models.list()
+        from groq import AsyncGroq
+        client = AsyncGroq(api_key=api_key, timeout=30.0)
+        models_page = await client.models.list()
         all_models = list(models_page.data)
 
         chat_models = [
             m for m in all_models
             if not any(kw in m.id.lower() for kw in _NON_CHAT_KEYWORDS)
         ]
-
         if not chat_models:
             return GROQ_MODEL
 
         chat_models.sort(key=lambda m: getattr(m, "created", 0), reverse=True)
-
-        # Prefer large models (70b, 72b, 405b) over smaller ones
         large = [m for m in chat_models if any(s in m.id for s in ("70b", "72b", "405b", "90b"))]
         chosen = (large[0] if large else chat_models[0]).id
 
@@ -59,6 +52,7 @@ def _auto_select_model(api_key: str) -> str:
     except Exception as exc:
         logger.warning("Model auto-select failed (%s), using fallback: %s", exc, GROQ_MODEL)
         return GROQ_MODEL
+
 
 EXPERT_SYSTEM_PROMPT = """\
 ТЫ — ЭКСПЕРТ ПО СОЗДАНИЮ СЕЛЬСКОХОЗЯЙСТВЕННЫХ ПРЕДПРИЯТИЙ И СПЕЦИАЛИСТ ПО ДИСТАНЦИОННОМУ ЗОНДИРОВАНИЮ ЗЕМЛИ.
@@ -74,26 +68,22 @@ EXPERT_SYSTEM_PROMPT = """\
 """
 
 
-def ask_expert(prompt: str, api_key: str, max_tokens: int = 2000) -> str:
-    """
-    Send a prompt to Groq llama-3.3-70b-versatile and return the response text.
-    Tries up to 2 times with a 15-second pause between attempts.
-    Returns the model's text response, or an error string on failure.
-    """
+async def ask_expert(prompt: str, api_key: str, max_tokens: int = 2000) -> str:
+    """Send a prompt to Groq asynchronously. Retries once after 10 s on failure."""
     try:
-        from groq import Groq
+        from groq import AsyncGroq
     except ImportError:
-        return "Ошибка: библиотека groq не установлена. Выполните: pip install groq"
+        return "Ошибка: библиотека groq не установлена."
 
     if not api_key:
         return "Ошибка: GROQ_API_KEY не задан."
 
-    client = Groq(api_key=api_key, timeout=90.0)
-    model = _auto_select_model(api_key)
+    client = AsyncGroq(api_key=api_key, timeout=90.0)
+    model = await _auto_select_model(api_key)
 
     for attempt in range(2):
         try:
-            completion = client.chat.completions.create(
+            completion = await client.chat.completions.create(
                 model=model,
                 messages=[
                     {"role": "system", "content": EXPERT_SYSTEM_PROMPT},
@@ -109,9 +99,9 @@ def ask_expert(prompt: str, api_key: str, max_tokens: int = 2000) -> str:
         except Exception as exc:
             logger.warning("ask_expert attempt %d failed: %s", attempt + 1, exc)
             if attempt == 0:
-                time.sleep(15)
+                await asyncio.sleep(10)
 
-    return f"Ошибка: не удалось получить ответ от Groq после 2 попыток."
+    return "Ошибка: не удалось получить ответ от Groq после 2 попыток."
 
 
 def _fmt(value, unit: str = "", fallback: str = "н/д") -> str:
@@ -134,7 +124,7 @@ def _get_soil_line(soilgrids: Dict, prop: str) -> str:
     return f"{val} {unit}".strip()
 
 
-def generate_field_report(field_data: Dict, api_key: str) -> str:
+async def generate_field_report(field_data: Dict, api_key: str) -> str:
     """
     Build a comprehensive Russian agronomic report for a single field.
     Extracts all available data, builds a prompt, and calls ask_expert.
@@ -381,10 +371,10 @@ def generate_field_report(field_data: Dict, api_key: str) -> str:
     ]
 
     prompt = "\n".join(lines)
-    return ask_expert(prompt, api_key, max_tokens=3000)
+    return await ask_expert(prompt, api_key, max_tokens=2000)
 
 
-def generate_region_summary(all_fields_data: Dict, api_key: str) -> str:
+async def generate_region_summary(all_fields_data: Dict, api_key: str) -> str:
     """
     Generate a regional summary based on all collected field data.
     Returns the summary text.
@@ -435,10 +425,10 @@ def generate_region_summary(all_fields_data: Dict, api_key: str) -> str:
     ]
 
     prompt = "\n".join(lines)
-    return ask_expert(prompt, api_key, max_tokens=2000)
+    return await ask_expert(prompt, api_key, max_tokens=2000)
 
 
-def generate_conclusion(all_fields_data: Dict, api_key: str) -> str:
+async def generate_conclusion(all_fields_data: Dict, api_key: str) -> str:
     """
     Generate a comparative conclusion across all fields with recommendations.
     Returns the conclusion text.
@@ -509,4 +499,4 @@ def generate_conclusion(all_fields_data: Dict, api_key: str) -> str:
     ]
 
     prompt = "\n".join(lines)
-    return ask_expert(prompt, api_key, max_tokens=2500)
+    return await ask_expert(prompt, api_key, max_tokens=2000)
