@@ -10,6 +10,7 @@ Uses only free, no-personal-account APIs:
 """
 
 import asyncio
+import datetime
 import math
 import logging
 from typing import Dict, List, Optional, Tuple
@@ -33,23 +34,31 @@ def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
+def _get_climate_date_range(years: int) -> tuple:
+    """Return (start_date_str, end_date_str) covering N complete past calendar years."""
+    end_year = datetime.date.today().year - 1
+    start_year = end_year - years + 1
+    return f"{start_year}-01-01", f"{end_year}-12-31"
+
+
 # ---------------------------------------------------------------------------
 # Climate — Open-Meteo Archive (ERA5)
 # ---------------------------------------------------------------------------
 
-async def fetch_climate(session: aiohttp.ClientSession, lat: float, lon: float, year: int = 2024) -> Dict:
-    """Fetch annual climate statistics from Open-Meteo Archive API."""
+async def fetch_climate(session: aiohttp.ClientSession, lat: float, lon: float, years: int = 1) -> Dict:
+    """Fetch climate statistics from Open-Meteo Archive API for N complete past years."""
     url = "https://archive-api.open-meteo.com/v1/archive"
+    start_date, end_date = _get_climate_date_range(years)
     params = {
         "latitude": lat,
         "longitude": lon,
-        "start_date": f"{year}-01-01",
-        "end_date": f"{year}-12-31",
+        "start_date": start_date,
+        "end_date": end_date,
         "daily": "temperature_2m_mean,precipitation_sum,et0_fao_evapotranspiration",
         "timezone": "auto",
     }
     try:
-        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=45)) as resp:
             if resp.status != 200:
                 return {"error": f"Open-Meteo HTTP {resp.status}"}
             data = await resp.json()
@@ -62,41 +71,59 @@ async def fetch_climate(session: aiohttp.ClientSession, lat: float, lon: float, 
         if not temps or not times:
             return {"error": "Open-Meteo: пустые данные"}
 
-        # Filter out None values
-        valid_temps = [t for t in temps if t is not None]
-        valid_precip = [p for p in precip if p is not None]
-
-        mean_temp = round(sum(valid_temps) / len(valid_temps), 1) if valid_temps else None
-        annual_precip = round(sum(valid_precip), 1) if valid_precip else None
-
-        # Monthly averages (12 months)
-        monthly_temps = []
-        monthly_precip = [0.0] * 12
-        for _ in range(12):
-            monthly_temps.append([])
+        # Group by year for trend analysis
+        year_temps: Dict[int, List[float]] = {}
+        year_precip: Dict[int, float] = {}
+        monthly_temps: List[List[float]] = [[] for _ in range(12)]
+        monthly_precip: List[float] = [0.0] * 12
 
         for i, t in enumerate(times):
             try:
-                month = int(t[5:7]) - 1  # 0-indexed
+                yr = int(t[:4])
+                month = int(t[5:7]) - 1
                 if month < 0 or month > 11:
                     continue
-                if i < len(temps) and temps[i] is not None:
-                    monthly_temps[month].append(temps[i])
-                if i < len(precip) and precip[i] is not None:
-                    monthly_precip[month] += precip[i]
+                temp_val = temps[i] if i < len(temps) else None
+                precip_val = precip[i] if i < len(precip) else None
+                if temp_val is not None:
+                    year_temps.setdefault(yr, []).append(temp_val)
+                    monthly_temps[month].append(temp_val)
+                if precip_val is not None:
+                    year_precip[yr] = year_precip.get(yr, 0.0) + precip_val
+                    monthly_precip[month] += precip_val
             except (IndexError, ValueError):
                 continue
 
-        temp_monthly = []
-        for m_temps in monthly_temps:
-            if m_temps:
-                temp_monthly.append(round(sum(m_temps) / len(m_temps), 1))
-            else:
-                temp_monthly.append(None)
+        # Per-year annual means for trend
+        yearly_mean_temps = {yr: sum(v) / len(v) for yr, v in year_temps.items() if v}
+        yearly_precip = {yr: round(yp, 1) for yr, yp in year_precip.items()}
 
-        # Vegetation period: May–Sep (months 4–8, 0-indexed)
+        # Overall averages across all years
+        all_temps = [v for vs in year_temps.values() for v in vs]
+        all_precip_vals = list(year_precip.values())
+        mean_temp = round(sum(all_temps) / len(all_temps), 1) if all_temps else None
+        annual_precip = round(sum(all_precip_vals) / len(all_precip_vals), 1) if all_precip_vals else None
+
+        temp_monthly = [
+            round(sum(m) / len(m), 1) if m else None
+            for m in monthly_temps
+        ]
         veg_precip = sum(monthly_precip[4:9])
         veg_period_months = sum(1 for t in temp_monthly if t is not None and t > 5.0)
+
+        # Trend: linear regression slope (°C/year) over available years
+        temp_trend_c_per_year = None
+        sorted_years = sorted(yearly_mean_temps.keys())
+        if len(sorted_years) >= 2:
+            n = len(sorted_years)
+            xs = list(range(n))
+            ys = [yearly_mean_temps[yr] for yr in sorted_years]
+            mean_x = sum(xs) / n
+            mean_y = sum(ys) / n
+            numerator = sum((xs[i] - mean_x) * (ys[i] - mean_y) for i in range(n))
+            denominator = sum((xs[i] - mean_x) ** 2 for i in range(n))
+            if denominator > 0:
+                temp_trend_c_per_year = round(numerator / denominator, 3)
 
         return {
             "mean_temp_c": mean_temp,
@@ -104,7 +131,11 @@ async def fetch_climate(session: aiohttp.ClientSession, lat: float, lon: float, 
             "veg_period_precip_mm": round(veg_precip, 1),
             "temp_monthly_c": temp_monthly,
             "veg_period_months": veg_period_months,
-            "period": f"{year}-01-01 — {year}-12-31",
+            "yearly_mean_temps": {str(yr): round(t, 1) for yr, t in yearly_mean_temps.items()},
+            "yearly_precip_mm": {str(yr): p for yr, p in yearly_precip.items()},
+            "temp_trend_c_per_year": temp_trend_c_per_year,
+            "period": f"{start_date} — {end_date}",
+            "years_analyzed": years,
             "source": "Open-Meteo Archive (ERA5)",
         }
     except asyncio.TimeoutError:
@@ -312,23 +343,39 @@ async def _fetch_soilgrids_point(session: aiohttp.ClientSession, lat: float, lon
 
 
 async def fetch_soilgrids(session: aiohttp.ClientSession, lat: float, lon: float) -> Dict:
-    """Fetch and average SoilGrids data from 2 nearby points."""
+    """Fetch and average SoilGrids data from 5 points in a 500m cross pattern."""
     try:
-        point1 = await _fetch_soilgrids_point(session, lat, lon)
-        await asyncio.sleep(0.5)  # Rate limit respect
-        point2 = await _fetch_soilgrids_point(session, lat + 0.0001, lon + 0.0001)
+        lat_rad = math.radians(lat)
+        dlat = 0.0045  # ~500 m north/south
+        dlon = 0.0045 / math.cos(lat_rad) if math.cos(lat_rad) != 0 else 0.0045  # ~500 m east/west
 
-        points = [p for p in [point1, point2] if p is not None]
+        sample_points = [
+            (lat, lon),
+            (lat + dlat, lon),   # north
+            (lat - dlat, lon),   # south
+            (lat, lon + dlon),   # east
+            (lat, lon - dlon),   # west
+        ]
+
+        point_results = []
+        for i, (slat, slon) in enumerate(sample_points):
+            result = await _fetch_soilgrids_point(session, slat, slon)
+            point_results.append(result)
+            if i < len(sample_points) - 1:
+                await asyncio.sleep(0.4)  # Rate limit respect
+
+        points = [p for p in point_results if p is not None]
 
         if not points:
             return {
                 "data": {},
                 "soil_type": "Не определён (нет данных SoilGrids)",
                 "source": "SoilGrids v2.0 ISRIC",
+                "points_sampled": 0,
             }
 
         # Average across available points
-        all_keys = set()
+        all_keys: set = set()
         for p in points:
             all_keys.update(p.keys())
 
@@ -354,6 +401,7 @@ async def fetch_soilgrids(session: aiohttp.ClientSession, lat: float, lon: float
         return {
             "data": soil_data,
             "soil_type": soil_type,
+            "points_sampled": len(points),
             "source": "SoilGrids v2.0 ISRIC",
         }
     except Exception as exc:
@@ -622,8 +670,8 @@ OWN_TYPES = {
 
 
 async def fetch_rosreestr(session: aiohttp.ClientSession, lat: float, lon: float) -> Dict:
-    """Fetch cadastral information from PKK Rosreestr."""
-    url = (
+    """Fetch cadastral information from PKK Rosreestr, including address and cadastral value."""
+    search_url = (
         f"https://pkk.rosreestr.ru/api/features/1"
         f"?text={lat}+{lon}&tolerance=4&returnGeometry=false&limit=5"
     )
@@ -637,7 +685,7 @@ async def fetch_rosreestr(session: aiohttp.ClientSession, lat: float, lon: float
         "Accept": "application/json, text/plain, */*",
     }
     try:
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+        async with session.get(search_url, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as resp:
             if resp.status != 200:
                 return {
                     "error": f"PKK Rosreestr HTTP {resp.status}",
@@ -666,12 +714,41 @@ async def fetch_rosreestr(session: aiohttp.ClientSession, lat: float, lon: float
         own_code = attrs.get("own_type")
         ownership_type = OWN_TYPES.get(own_code, "н/д") if own_code is not None else "н/д"
 
+        # Fetch detail endpoint for address and cadastral value
+        address = "н/д"
+        cadastral_value_rub = None
+        cadastral_value_date = None
+
+        if cad_num and cad_num != "н/д":
+            encoded_id = cad_num.replace(":", "%3A")
+            detail_url = f"https://pkk.rosreestr.ru/api/features/1/{encoded_id}"
+            try:
+                async with session.get(
+                    detail_url, headers=headers, timeout=aiohttp.ClientTimeout(total=20)
+                ) as detail_resp:
+                    if detail_resp.status == 200:
+                        detail_data = await detail_resp.json(content_type=None)
+                        detail_attrs = detail_data.get("feature", {}).get("attrs", {}) or {}
+                        address = detail_attrs.get("address") or "н/д"
+                        cad_cost = detail_attrs.get("cad_cost")
+                        if cad_cost is not None:
+                            try:
+                                cadastral_value_rub = float(cad_cost)
+                            except (TypeError, ValueError):
+                                pass
+                        cadastral_value_date = detail_attrs.get("date_cost") or None
+            except Exception as exc:
+                logger.warning("PKK detail endpoint failed for %s: %s", cad_num, exc)
+
         return {
             "cadastral_number": cad_num,
+            "address": address,
             "area_m2": area_m2,
             "category": category,
             "permitted_use": permitted_use,
             "ownership_type": ownership_type,
+            "cadastral_value_rub": cadastral_value_rub,
+            "cadastral_value_date": cadastral_value_date,
             "source": "ПКК Росреестр",
         }
     except asyncio.TimeoutError:
@@ -688,16 +765,18 @@ async def fetch_rosreestr(session: aiohttp.ClientSession, lat: float, lon: float
 # ---------------------------------------------------------------------------
 
 async def collect_field_data(
-    lat: float, lon: float, field_name: str = "Участок", year: int = 2024
+    lat: float, lon: float, field_name: str = "Участок", years: int = 1
 ) -> Dict:
     """
     Collect all data for a single field.
     Creates one shared aiohttp.ClientSession and runs all requests in parallel.
+    years: number of complete past calendar years to analyze (1, 3, or 5).
     """
+    start_date, end_date = _get_climate_date_range(years)
     connector = aiohttp.TCPConnector(limit=10, ssl=False)
     async with aiohttp.ClientSession(connector=connector) as session:
         tasks = [
-            fetch_climate(session, lat, lon, year),
+            fetch_climate(session, lat, lon, years),
             fetch_dem(session, lat, lon),
             fetch_soilgrids(session, lat, lon),
             fetch_geocoding(session, lat, lon),
@@ -723,7 +802,8 @@ async def collect_field_data(
             "lat": lat,
             "lon": lon,
             "name": field_name,
-            "year": year,
+            "years": years,
+            "period": f"{start_date} — {end_date}",
         },
         "raw": {
             "climate": climate,
@@ -736,12 +816,14 @@ async def collect_field_data(
     }
 
 
-async def collect_multiple_fields(fields_list: List[Dict], year: int = 2024) -> Dict:
+async def collect_multiple_fields(fields_list: List[Dict], years: int = 1) -> Dict:
     """
     Collect data for multiple fields sequentially to avoid rate limits.
     fields_list: [{"lat": ..., "lon": ..., "name": ...}, ...]
+    years: number of complete past calendar years to analyze (1, 3, or 5).
     Returns: {"Field_1": field_data, "Field_2": field_data, ...}
     """
+    start_date, end_date = _get_climate_date_range(years)
     results = {}
     for i, field in enumerate(fields_list):
         field_id = f"Field_{i + 1}"
@@ -750,11 +832,11 @@ async def collect_multiple_fields(fields_list: List[Dict], year: int = 2024) -> 
         name = field.get("name", f"Участок {i + 1}")
         logger.info("Collecting data for %s (%s, %s)...", name, lat, lon)
         try:
-            data = await collect_field_data(lat, lon, name, year)
+            data = await collect_field_data(lat, lon, name, years)
         except Exception as exc:
             logger.exception("collect_field_data failed for field %s", field_id)
             data = {
-                "meta": {"lat": lat, "lon": lon, "name": name, "year": year},
+                "meta": {"lat": lat, "lon": lon, "name": name, "years": years, "period": f"{start_date} — {end_date}"},
                 "raw": {"error": str(exc)},
             }
         results[field_id] = data

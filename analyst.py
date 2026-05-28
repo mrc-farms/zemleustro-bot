@@ -97,7 +97,8 @@ def generate_field_report(field_data: Dict, api_key: str) -> str:
     lat = meta.get("lat", "?")
     lon = meta.get("lon", "?")
     name = meta.get("name", "Участок")
-    year = meta.get("year", 2024)
+    years = meta.get("years", 1)
+    period = meta.get("period", "н/д")
 
     climate = raw.get("climate", {}) if isinstance(raw.get("climate"), dict) else {}
     dem = raw.get("dem", {}) if isinstance(raw.get("dem"), dict) else {}
@@ -119,8 +120,11 @@ def generate_field_report(field_data: Dict, api_key: str) -> str:
     veg_precip = _fmt(climate.get("veg_period_precip_mm"), "мм")
     veg_months = _fmt(climate.get("veg_period_months"), "мес.")
     temp_monthly = climate.get("temp_monthly_c", [])
-    climate_period = climate.get("period", str(year))
+    climate_period = climate.get("period", period)
     climate_error = climate.get("error", "")
+    temp_trend = climate.get("temp_trend_c_per_year")
+    yearly_mean_temps = climate.get("yearly_mean_temps", {})
+    yearly_precip = climate.get("yearly_precip_mm", {})
 
     monthly_str = "н/д"
     if temp_monthly and len(temp_monthly) == 12:
@@ -131,6 +135,23 @@ def generate_field_report(field_data: Dict, api_key: str) -> str:
             parts.append(f"{mn}: {tv if tv is not None else 'н/д'}°C")
         monthly_str = ", ".join(parts)
 
+    trend_str = "н/д"
+    if temp_trend is not None:
+        direction = "потепление" if temp_trend > 0 else "похолодание"
+        trend_str = f"{'+' if temp_trend > 0 else ''}{temp_trend} °C/год ({direction})"
+
+    yearly_temp_str = "н/д"
+    if yearly_mean_temps:
+        yearly_temp_str = ", ".join(
+            f"{yr}: {t}°C" for yr, t in sorted(yearly_mean_temps.items())
+        )
+
+    yearly_precip_str = "н/д"
+    if yearly_precip:
+        yearly_precip_str = ", ".join(
+            f"{yr}: {p} мм" for yr, p in sorted(yearly_precip.items())
+        )
+
     # --- DEM ---
     elevation = _fmt(dem.get("elevation_mean_m"), "м")
     slope = _fmt(dem.get("slope_deg"), "°")
@@ -140,6 +161,7 @@ def generate_field_report(field_data: Dict, api_key: str) -> str:
 
     # --- Soil ---
     soil_type = soilgrids.get("soil_type", "н/д")
+    soil_points = soilgrids.get("points_sampled", "н/д")
     ph_val = _get_soil_line(soilgrids, "phh2o")
     soc_val = _get_soil_line(soilgrids, "soc")
     clay_val = _get_soil_line(soilgrids, "clay")
@@ -172,17 +194,21 @@ def generate_field_report(field_data: Dict, api_key: str) -> str:
 
     # --- Cadastral ---
     cad_num = rosreestr.get("cadastral_number", "н/д")
+    address = rosreestr.get("address", "н/д")
     area_m2 = rosreestr.get("area_m2")
     area_str = f"{area_m2} м²" if area_m2 else "н/д"
     category = rosreestr.get("category", "н/д")
     permitted_use = rosreestr.get("permitted_use", "н/д")
     ownership = rosreestr.get("ownership_type", "н/д")
+    cad_value = rosreestr.get("cadastral_value_rub")
+    cad_value_date = rosreestr.get("cadastral_value_date", "н/д")
+    cad_value_str = f"{cad_value:,.0f} руб." if cad_value else "н/д"
     rosreestr_error = rosreestr.get("error", "")
 
     # Build prompt
     lines = [
         f"АГРОНОМИЧЕСКИЙ АНАЛИЗ УЧАСТКА: {name}",
-        f"Координаты: {lat}, {lon} | Год данных: {year}",
+        f"Координаты: {lat}, {lon} | Период анализа: {period} ({years} лет)",
         "",
         "═══ МЕСТОПОЛОЖЕНИЕ ═══",
         f"Страна: {country}",
@@ -213,12 +239,18 @@ def generate_field_report(field_data: Dict, api_key: str) -> str:
     else:
         lines += [
             f"Период: {climate_period}",
-            f"Среднегодовая температура: {mean_temp}",
-            f"Годовое количество осадков: {annual_precip}",
+            f"Среднегодовая температура (среднее за период): {mean_temp}",
+            f"Годовое количество осадков (среднее): {annual_precip}",
             f"Осадки за вегетационный период (май–сентябрь): {veg_precip}",
             f"Вегетационный период (месяцев >5°C): {veg_months}",
-            f"Среднемесячные температуры: {monthly_str}",
+            f"Среднемесячные температуры (среднее за период): {monthly_str}",
         ]
+        if years > 1:
+            lines += [
+                f"Температура по годам: {yearly_temp_str}",
+                f"Осадки по годам: {yearly_precip_str}",
+                f"Тренд температуры: {trend_str}",
+            ]
 
     lines += [
         "",
@@ -229,6 +261,7 @@ def generate_field_report(field_data: Dict, api_key: str) -> str:
     else:
         lines += [
             f"Тип почвы: {soil_type}",
+            f"Точек отбора проб: {soil_points} (крестообразная сетка ~500 м)",
             f"pH (вода): {ph_val}",
             f"Органический углерод (SOC): {soc_val}",
             f"Содержание глины: {clay_val}",
@@ -265,10 +298,12 @@ def generate_field_report(field_data: Dict, api_key: str) -> str:
     else:
         lines += [
             f"Кадастровый номер: {cad_num}",
+            f"Адрес по кадастру: {address}",
             f"Площадь: {area_str}",
             f"Категория земель: {category}",
             f"Разрешённое использование: {permitted_use}",
             f"Форма собственности: {ownership}",
+            f"Кадастровая стоимость: {cad_value_str} (дата оценки: {cad_value_date})",
         ]
 
     lines += [
@@ -278,10 +313,10 @@ def generate_field_report(field_data: Dict, api_key: str) -> str:
         "Структура отчёта — строго 7 разделов:",
         "1. ПОЛОЖЕНИЕ И РЕЛЬЕФ — оценка местоположения, высоты, уклона, экспозиции и рисков",
         "2. ПОЧВЫ — детальная характеристика почвы, плодородие, лимитирующие факторы",
-        "3. КЛИМАТ — агроклиматическая оценка, пригодность для культур",
+        "3. КЛИМАТ — агроклиматическая оценка; если данные за несколько лет — опиши тренды",
         "4. ВОДНЫЙ РЕЖИМ — оценка водного питания, ирригационная потребность",
         "5. ЭКОЛОГИЯ — риски эрозии, деградации, охранные зоны",
-        "6. ЛОГИСТИКА — оценка транспортной доступности, близость к рынкам",
+        "6. ЛОГИСТИКА — оценка транспортной доступности, близость к рынкам, кадастровые данные",
         "7. РЕКОМЕНДАЦИИ — конкретные культуры, агротехнические меры, приоритеты",
         "Используй только данные из отчёта. Не придумывай цифры. Пиши профессионально и по-русски.",
     ]

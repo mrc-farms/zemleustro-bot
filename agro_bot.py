@@ -50,6 +50,7 @@ logger = logging.getLogger(__name__)
 MAIN_MENU = 0
 COLLECTING_COORDS = 1
 CONFIRMING = 2
+SELECTING_PERIOD = 3
 
 # ---------------------------------------------------------------------------
 # Per-user session storage
@@ -96,6 +97,17 @@ def get_collecting_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("✅ Начать анализ", callback_data="confirm_analyze")],
         [InlineKeyboardButton("🗑️ Очистить список", callback_data="confirm_clear")],
         [InlineKeyboardButton("⬅️ Главное меню", callback_data="confirm_back")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def get_period_kb() -> InlineKeyboardMarkup:
+    """Return the period selection keyboard."""
+    keyboard = [
+        [InlineKeyboardButton("📅 1 год (быстро)", callback_data="period_1")],
+        [InlineKeyboardButton("📅 3 года (средняя точность)", callback_data="period_3")],
+        [InlineKeyboardButton("📅 5 лет (максимум данных)", callback_data="period_5")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="period_back")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -356,7 +368,7 @@ async def callback_menu_examples(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def callback_confirm_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """User clicked 'Начать анализ'."""
+    """User clicked 'Начать анализ' — show period selection."""
     query = update.callback_query
     await query.answer()
     user = update.effective_user
@@ -371,23 +383,43 @@ async def callback_confirm_analyze(update: Update, context: ContextTypes.DEFAULT
         return COLLECTING_COORDS
 
     if len(fields) > 5:
-        fields = fields[:5]
-        session["fields"] = fields
+        session["fields"] = fields[:5]
+
+    n = len(session["fields"])
+    names = "\n".join(f"  {i+1}. {f['name']}" for i, f in enumerate(session["fields"]))
+    await query.edit_message_text(
+        f"📋 Участков: {n}\n{names}\n\n"
+        "📅 За какой период анализировать климатические данные?",
+        reply_markup=get_period_kb(),
+    )
+    return SELECTING_PERIOD
+
+
+async def _run_analysis(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, years: int
+) -> int:
+    """Run data collection and report generation for the current session."""
+    user = update.effective_user
+    session = get_session(user.id)
+    fields = session.get("fields", [])
+    chat_id = update.effective_chat.id
 
     session["step"] = "analyzing"
 
-    # Send progress message and run analysis
-    await query.edit_message_text(
-        f"⏳ Собираю данные для {len(fields)} участка(ов)...\n"
-        "Это может занять 1–3 минуты. Пожалуйста, подождите."
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            f"⏳ Собираю данные для {len(fields)} участка(ов) за {years} год(а/лет)...\n"
+            "Это может занять 1–3 минуты. Пожалуйста, подождите."
+        ),
     )
 
     try:
-        all_data = await collect_multiple_fields(fields)
+        all_data = await collect_multiple_fields(fields, years=years)
     except Exception as exc:
         logger.exception("collect_multiple_fields failed")
         await context.bot.send_message(
-            chat_id=update.effective_chat.id,
+            chat_id=chat_id,
             text=f"❌ Ошибка при сборе данных: {exc}\n\nПопробуйте ещё раз.",
             reply_markup=get_main_menu_kb(),
         )
@@ -395,15 +427,14 @@ async def callback_confirm_analyze(update: Update, context: ContextTypes.DEFAULT
         return MAIN_MENU
 
     await context.bot.send_message(
-        chat_id=update.effective_chat.id,
+        chat_id=chat_id,
         text="📊 Данные собраны. Генерирую агрономический анализ...",
     )
 
-    # Generate and send reports for each field
     for field_id, field_data in all_data.items():
         field_name = field_data.get("meta", {}).get("name", field_id)
         await context.bot.send_message(
-            chat_id=update.effective_chat.id,
+            chat_id=chat_id,
             text=f"📝 Составляю отчёт для: {field_name}...",
         )
         try:
@@ -413,21 +444,15 @@ async def callback_confirm_analyze(update: Update, context: ContextTypes.DEFAULT
             report = f"Ошибка при генерации отчёта: {exc}"
 
         header = f"🌾 ОТЧЁТ: {field_name}\n{'═' * 40}\n\n"
-        full_text = header + report
-        chunks = split_message(full_text, max_len=4000)
-        for chunk in chunks:
+        for chunk in split_message(header + report, max_len=4000):
             try:
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text=chunk,
-                )
+                await context.bot.send_message(chat_id=chat_id, text=chunk)
             except Exception as exc:
                 logger.error("Failed to send report chunk: %s", exc)
 
-    # Generate and send comparative conclusion if multiple fields
     if len(all_data) > 1:
         await context.bot.send_message(
-            chat_id=update.effective_chat.id,
+            chat_id=chat_id,
             text="🔍 Составляю сравнительный анализ участков...",
         )
         try:
@@ -437,26 +462,45 @@ async def callback_confirm_analyze(update: Update, context: ContextTypes.DEFAULT
             conclusion = f"Ошибка при генерации сравнительного анализа: {exc}"
 
         header = f"📊 СРАВНИТЕЛЬНЫЙ АНАЛИЗ\n{'═' * 40}\n\n"
-        full_text = header + conclusion
-        chunks = split_message(full_text, max_len=4000)
-        for chunk in chunks:
+        for chunk in split_message(header + conclusion, max_len=4000):
             try:
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text=chunk,
-                )
+                await context.bot.send_message(chat_id=chat_id, text=chunk)
             except Exception as exc:
                 logger.error("Failed to send conclusion chunk: %s", exc)
 
-    # Done
     await context.bot.send_message(
-        chat_id=update.effective_chat.id,
+        chat_id=chat_id,
         text="✅ Анализ завершён! Выберите следующее действие:",
         reply_markup=get_main_menu_kb(),
     )
-
     clear_session(user.id)
     return MAIN_MENU
+
+
+async def callback_period_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """User selected an analysis period (1/3/5 years) or pressed Back."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data or ""
+
+    if data == "period_back":
+        session = get_session(update.effective_user.id)
+        fields = session.get("fields", [])
+        lines = ["📋 Текущий список участков:"]
+        for i, f in enumerate(fields, 1):
+            lines.append(f"  {i}. {f['name']} ({f['lat']}, {f['lon']})")
+        lines.append("\nДобавьте ещё участки или нажмите «✅ Начать анализ».")
+        await query.edit_message_text("\n".join(lines), reply_markup=get_collecting_kb())
+        return COLLECTING_COORDS
+
+    period_map = {"period_1": 1, "period_3": 3, "period_5": 5}
+    years = period_map.get(data)
+    if years is None:
+        await query.answer("Неизвестный период")
+        return SELECTING_PERIOD
+
+    await query.edit_message_text(f"⏳ Выбран период: {years} год(а/лет). Начинаю сбор данных...")
+    return await _run_analysis(update, context, years)
 
 
 async def callback_confirm_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -612,6 +656,9 @@ def main() -> None:
             ],
             CONFIRMING: [
                 CallbackQueryHandler(collecting_callback_router),
+            ],
+            SELECTING_PERIOD: [
+                CallbackQueryHandler(callback_period_selected),
             ],
         },
         fallbacks=[
