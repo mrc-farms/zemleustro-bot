@@ -412,14 +412,32 @@ async def _run_analysis(
         chat_id=chat_id,
         text=(
             f"⏳ Собираю данные для {len(fields)} участка(ов) за {years} год(а/лет)...\n"
-            "Это может занять 1–3 минуты. Пожалуйста, подождите."
+            "Это может занять 2–4 минуты. Пожалуйста, подождите."
         ),
     )
+
+    # Heartbeat: send a status update every 30 s so the user knows the bot is alive
+    async def _heartbeat() -> None:
+        messages = [
+            "🌍 Запрашиваю климат и рельеф...",
+            "🪱 Получаю данные о почве (это самый долгий шаг)...",
+            "🗺️ Проверяю инфраструктуру и кадастр...",
+            "🤖 Почти готово, финализирую данные...",
+        ]
+        for msg in messages:
+            await asyncio.sleep(30)
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=msg)
+            except Exception:
+                pass
+
+    heartbeat_task = asyncio.create_task(_heartbeat())
 
     try:
         all_data = await collect_multiple_fields(fields, years=years)
     except Exception as exc:
         logger.exception("collect_multiple_fields failed")
+        heartbeat_task.cancel()
         await context.bot.send_message(
             chat_id=chat_id,
             text=f"❌ Ошибка при сборе данных: {exc}\n\nПопробуйте ещё раз.",
@@ -428,6 +446,7 @@ async def _run_analysis(
         clear_session(user.id)
         return MAIN_MENU
 
+    heartbeat_task.cancel()
     await context.bot.send_message(
         chat_id=chat_id,
         text="📊 Данные собраны. Генерирую агрономический анализ...",

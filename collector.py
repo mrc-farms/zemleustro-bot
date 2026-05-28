@@ -309,7 +309,7 @@ async def _fetch_soilgrids_point(session: aiohttp.ClientSession, lat: float, lon
         "value": "mean",
     }
     try:
-        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=40)) as resp:
+        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
             if resp.status != 200:
                 logger.warning("SoilGrids HTTP %s for point (%.4f, %.4f)", resp.status, lat, lon)
                 return None
