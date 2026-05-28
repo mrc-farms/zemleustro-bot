@@ -10,6 +10,8 @@ import json
 import asyncio
 import logging
 import re
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Dict, List, Optional
 
 from aiohttp import web as aiohttp_web
@@ -627,17 +629,7 @@ async def coords_message_handler(update: Update, context: ContextTypes.DEFAULT_T
 # ---------------------------------------------------------------------------
 
 async def post_init(application: Application) -> None:
-    """Register bot commands, set menu button, and start health-check HTTP server."""
-    # Health-check server so Render's free Web Service tier doesn't kill the process
-    port = int(os.environ.get("PORT", 10000))
-    health_app = aiohttp_web.Application()
-    health_app.router.add_get("/", lambda r: aiohttp_web.Response(text="OK"))
-    health_app.router.add_get("/health", lambda r: aiohttp_web.Response(text="OK"))
-    runner = aiohttp_web.AppRunner(health_app)
-    await runner.setup()
-    await aiohttp_web.TCPSite(runner, "0.0.0.0", port).start()
-    logger.info("Health-check server listening on port %d", port)
-
+    """Register bot commands and set menu button."""
     commands = [
         BotCommand("start", "Начать / главное меню"),
         BotCommand("analyze", "Анализировать поля"),
@@ -653,6 +645,23 @@ async def post_init(application: Application) -> None:
         logger.warning("set_chat_menu_button failed: %s", exc)
 
 
+def _start_health_server() -> None:
+    """Bind a port immediately so Render's free tier doesn't kill the process."""
+    port = int(os.environ.get("PORT", 10000))
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+        def log_message(self, *args):
+            pass  # silence access logs
+
+    server = HTTPServer(("0.0.0.0", port), _Handler)
+    logger.info("Health-check server listening on port %d", port)
+    server.serve_forever()
+
+
 def main() -> None:
     """Entry point — build and run the bot."""
     if not BOT_TOKEN:
@@ -661,6 +670,10 @@ def main() -> None:
 
     if not GROQ_API_KEY:
         logger.warning("GROQ_API_KEY не задан — AI-анализ будет недоступен.")
+
+    # Start health-check server in background thread BEFORE run_polling()
+    # so Render detects the open port and keeps the service alive.
+    threading.Thread(target=_start_health_server, daemon=True).start()
 
     logger.info("Инициализация приложения...")
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
