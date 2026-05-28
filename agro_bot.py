@@ -14,8 +14,6 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Dict, List, Optional
 
-from aiohttp import web as aiohttp_web
-
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -647,19 +645,25 @@ async def post_init(application: Application) -> None:
 
 def _start_health_server() -> None:
     """Bind a port immediately so Render's free tier doesn't kill the process."""
-    port = int(os.environ.get("PORT", 10000))
+    try:
+        port = int(os.environ.get("PORT", 10000))
+        print(f"[health] binding port {port}", flush=True)
 
-    class _Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"OK")
-        def log_message(self, *args):
-            pass  # silence access logs
+        class _Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"OK")
+            def log_message(self, *args):
+                pass
 
-    server = HTTPServer(("0.0.0.0", port), _Handler)
-    logger.info("Health-check server listening on port %d", port)
-    server.serve_forever()
+        server = HTTPServer(("0.0.0.0", port), _Handler)
+        print(f"[health] listening on port {port}", flush=True)
+        logger.info("Health-check server listening on port %d", port)
+        server.serve_forever()
+    except Exception as exc:
+        print(f"[health] FAILED: {exc}", flush=True)
+        logger.error("Health-check server failed to start: %s", exc)
 
 
 def main() -> None:
