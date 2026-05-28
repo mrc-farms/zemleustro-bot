@@ -624,27 +624,8 @@ def main() -> None:
     app.add_handler(CommandHandler("help", help_command))
 
     # Deployment: webhook on Render, polling locally
-    if os.environ.get("RENDER"):
-        port = int(os.environ.get("PORT", "10000"))
-        host = os.environ.get("RENDER_EXTERNAL_HOSTNAME", "")
-        if host:
-            logger.info("Starting in webhook mode on port %d (host: %s)", port, host)
-            app.run_webhook(
-                listen="0.0.0.0",
-                port=port,
-                webhook_url=f"https://{host}/webhook",
-                secret_token=BOT_TOKEN.split(":")[1][:16],
-            )
-        else:
-            logger.warning(
-                "RENDER is set but RENDER_EXTERNAL_HOSTNAME is empty — "
-                "falling back to polling."
-            )
-            print("🤖 Запуск в режиме polling (RENDER_EXTERNAL_HOSTNAME не задан)...")
-            app.run_polling()
-    else:
-        print("🤖 Запуск в режиме polling...")
-        app.run_polling()
+    print("🤖 Запуск в режиме polling...")
+    app.run_polling()
 
 
 if __name__ == "__main__":
