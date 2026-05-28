@@ -16,6 +16,8 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    BotCommand,
+    MenuButtonCommands,
 )
 from telegram.ext import (
     Application,
@@ -235,7 +237,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     welcome = (
         f"Привет, {user.first_name}! 👋\n\n"
-        "Я — ZemleustroBot, агрономический помощник для анализа земельных участков.\n\n"
+        "Я — землебот, агрономический помощник для анализа земельных участков.\n\n"
         "🌱 Что я умею:\n"
         "• Анализировать климат, почву и рельеф по координатам\n"
         "• Оценивать инфраструктуру: дороги, ЛЭП, водотоки\n"
@@ -251,7 +253,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /help — show detailed help."""
     help_text = (
-        "📖 СПРАВКА ПО ZEMLEUSTROBOT\n\n"
+        "📖 СПРАВКА ПО ЗЕМЛЕБОТУ\n\n"
         "Бот анализирует сельскохозяйственные земельные участки по GPS-координатам.\n\n"
         "ИСТОЧНИКИ ДАННЫХ:\n"
         "• Климат — Open-Meteo Archive (ERA5, ретроспектива)\n"
@@ -591,6 +593,17 @@ async def coords_message_handler(update: Update, context: ContextTypes.DEFAULT_T
 # main()
 # ---------------------------------------------------------------------------
 
+async def post_init(application: Application) -> None:
+    """Register bot commands and set menu button so users see a clickable Start."""
+    commands = [
+        BotCommand("start", "Начать / главное меню"),
+        BotCommand("analyze", "Анализировать поля"),
+        BotCommand("help", "Справка"),
+    ]
+    await application.bot.set_my_commands(commands)
+    await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+
+
 def main() -> None:
     """Entry point — build and run the bot."""
     if not BOT_TOKEN:
@@ -599,7 +612,7 @@ def main() -> None:
             "Установите переменную окружения AGRO_BOT_TOKEN."
         )
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     # Callback routing table
     main_menu_callbacks = {
