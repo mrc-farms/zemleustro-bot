@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 GROQ_API_KEY: str = os.environ.get("GROQ_API_KEY", "")
+GROQ_MODEL: str = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 EXPERT_SYSTEM_PROMPT = """\
 ТЫ — ЭКСПЕРТ ПО СОЗДАНИЮ СЕЛЬСКОХОЗЯЙСТВЕННЫХ ПРЕДПРИЯТИЙ И СПЕЦИАЛИСТ ПО ДИСТАНЦИОННОМУ ЗОНДИРОВАНИЮ ЗЕМЛИ.
@@ -45,7 +46,7 @@ def ask_expert(prompt: str, api_key: str, max_tokens: int = 2000) -> str:
     for attempt in range(2):
         try:
             completion = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model=GROQ_MODEL,
                 messages=[
                     {"role": "system", "content": EXPERT_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
