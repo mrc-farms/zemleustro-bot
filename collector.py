@@ -519,95 +519,81 @@ async def overpass_query(session: aiohttp.ClientSession, query: str, timeout: in
     return []
 
 
-async def get_nearest_node(
+async def get_nearest_way(
     session: aiohttp.ClientSession,
     lat: float,
     lon: float,
     tag_filter: str,
-    radius: int = 15000,
+    radius: int = 8000,
 ) -> Tuple[Optional[float], Dict]:
     """
     Find the nearest way matching tag_filter within radius metres.
+    Uses 'out geom' so geometry is returned inline — no secondary node lookup,
+    no risk of partial-result bugs when Overpass hits its server timeout.
     Returns (distance_metres, way_tags) or (None, {}).
     """
     query = (
-        f"[out:json][timeout:13];"
-        f"(way[{tag_filter}](around:{radius},{lat},{lon});>;);"
-        f"out body;"
+        f"[out:json][timeout:20];"
+        f"(way[{tag_filter}](around:{radius},{lat},{lon}););"
+        f"out geom;"
     )
     try:
-        elements = await overpass_query(session, query, timeout=15)
+        elements = await overpass_query(session, query, timeout=22)
         if not elements:
-            return None, {}
-
-        # Build node coordinate map
-        nodes: Dict[int, Tuple[float, float]] = {}
-        ways: List[Dict] = []
-
-        for elem in elements:
-            if elem.get("type") == "node":
-                nid = elem.get("id")
-                nlat = elem.get("lat")
-                nlon = elem.get("lon")
-                if nid is not None and nlat is not None and nlon is not None:
-                    nodes[nid] = (nlat, nlon)
-            elif elem.get("type") == "way":
-                ways.append(elem)
-
-        if not ways or not nodes:
             return None, {}
 
         min_dist = float("inf")
         best_tags: Dict = {}
 
-        for way in ways:
-            way_nodes = way.get("nodes", [])
+        for way in elements:
+            if way.get("type") != "way":
+                continue
+            geometry = way.get("geometry", [])
             tags = way.get("tags", {})
-            for nid in way_nodes:
-                if nid in nodes:
-                    nlat, nlon = nodes[nid]
-                    dist = haversine(lat, lon, nlat, nlon)
-                    if dist < min_dist:
-                        min_dist = dist
-                        best_tags = tags
+            for point in geometry:
+                nlat = point.get("lat")
+                nlon = point.get("lon")
+                if nlat is None or nlon is None:
+                    continue
+                dist = haversine(lat, lon, nlat, nlon)
+                if dist < min_dist:
+                    min_dist = dist
+                    best_tags = tags
 
         if min_dist == float("inf"):
             return None, {}
 
         return round(min_dist), best_tags
     except Exception as exc:
-        logger.exception("get_nearest_node error for tag_filter=%s", tag_filter)
+        logger.exception("get_nearest_way error for tag_filter=%s", tag_filter)
         return None, {}
 
 
 async def fetch_osm_infrastructure(session: aiohttp.ClientSession, lat: float, lon: float) -> Dict:
     """Fetch OSM infrastructure data around the field in parallel."""
     try:
-        # Run road, power, water, and pipeline queries in parallel
-        road_task = get_nearest_node(session, lat, lon, '"highway"', radius=15000)
-        power_task = get_nearest_node(session, lat, lon, '"power"="line"', radius=20000)
-        water_task = get_nearest_node(session, lat, lon, '"waterway"~"river|stream|canal"', radius=15000)
-        pipeline_task = get_nearest_node(session, lat, lon, '"man_made"="pipeline"]["substance"="gas"', radius=20000)
+        road_task = get_nearest_way(session, lat, lon, '"highway"', radius=8000)
+        power_task = get_nearest_way(session, lat, lon, '"power"="line"', radius=15000)
+        water_task = get_nearest_way(session, lat, lon, '"waterway"~"river|stream|canal"', radius=10000)
+        pipeline_task = get_nearest_way(session, lat, lon, '"man_made"="pipeline"]["substance"="gas"', radius=15000)
 
         settlements_query = (
-            f"[out:json][timeout:13];"
-            f'(node["place"~"city|town|village"](around:50000,{lat},{lon}););'
+            f"[out:json][timeout:20];"
+            f'(node["place"~"city|town|village|hamlet"](around:25000,{lat},{lon}););'
             f"out body;"
         )
-        settlements_task = overpass_query(session, settlements_query, timeout=15)
+        settlements_task = overpass_query(session, settlements_query, timeout=22)
 
         (road_dist, road_tags), (power_dist, _), (water_dist, _), (pipeline_dist, _), settlements = (
             await asyncio.gather(road_task, power_task, water_task, pipeline_task, settlements_task)
         )
 
-        # Road type
         road_type = road_tags.get("highway", "unknown") if road_tags else "unknown"
         road_type_ru = HW_RU.get(road_type, road_type)
         truck_accessible = road_type in (
             "motorway", "trunk", "primary", "secondary", "tertiary", "unclassified", "residential"
         )
 
-        # Settlements: find nearest and top-3 distances
         nearest_settlement_m = None
         nearest_place_name = "н/д"
         route_distances_km: List[Dict] = []
@@ -674,7 +660,7 @@ async def fetch_rosreestr(session: aiohttp.ClientSession, lat: float, lon: float
     """Fetch cadastral information from PKK Rosreestr, including address and cadastral value."""
     search_url = (
         f"https://pkk.rosreestr.ru/api/features/1"
-        f"?text={lat}+{lon}&tolerance=4&returnGeometry=false&limit=5"
+        f"?text={lat}+{lon}&tolerance=50&returnGeometry=false&limit=5"
     )
     headers = {
         "User-Agent": (
@@ -683,6 +669,7 @@ async def fetch_rosreestr(session: aiohttp.ClientSession, lat: float, lon: float
             "Chrome/120.0.0.0 Safari/537.36"
         ),
         "Referer": "https://pkk.rosreestr.ru/",
+              "Origin": "https://pkk.rosreestr.ru",
         "Accept": "application/json, text/plain, */*",
     }
     try:
