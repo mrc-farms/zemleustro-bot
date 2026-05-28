@@ -631,8 +631,14 @@ async def post_init(application: Application) -> None:
         BotCommand("analyze", "Анализировать поля"),
         BotCommand("help", "Справка"),
     ]
-    await application.bot.set_my_commands(commands)
-    await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+    try:
+        await application.bot.set_my_commands(commands)
+    except Exception as exc:
+        logger.warning("set_my_commands failed: %s", exc)
+    try:
+        await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+    except Exception as exc:
+        logger.warning("set_chat_menu_button failed: %s", exc)
 
 
 def main() -> None:
