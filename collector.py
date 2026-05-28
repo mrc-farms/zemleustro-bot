@@ -343,18 +343,19 @@ async def _fetch_soilgrids_point(session: aiohttp.ClientSession, lat: float, lon
 
 
 async def fetch_soilgrids(session: aiohttp.ClientSession, lat: float, lon: float) -> Dict:
-    """Fetch and average SoilGrids data from 5 points in a 500m cross pattern."""
+    """Fetch and average SoilGrids data from 5 points within ~20m radius (cross pattern)."""
     try:
         lat_rad = math.radians(lat)
-        dlat = 0.0045  # ~500 m north/south
-        dlon = 0.0045 / math.cos(lat_rad) if math.cos(lat_rad) != 0 else 0.0045  # ~500 m east/west
+        # ~20 m offset: stays within any field, even narrow suburban plots
+        dlat = 0.00018
+        dlon = 0.00018 / math.cos(lat_rad) if math.cos(lat_rad) != 0 else 0.00018
 
         sample_points = [
             (lat, lon),
-            (lat + dlat, lon),   # north
-            (lat - dlat, lon),   # south
-            (lat, lon + dlon),   # east
-            (lat, lon - dlon),   # west
+            (lat + dlat, lon),   # north  ~20 m
+            (lat - dlat, lon),   # south  ~20 m
+            (lat, lon + dlon),   # east   ~20 m
+            (lat, lon - dlon),   # west   ~20 m
         ]
 
         point_results = []
