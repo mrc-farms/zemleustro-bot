@@ -575,6 +575,10 @@ async def callback_confirm_back(update: Update, context: ContextTypes.DEFAULT_TY
 # ---------------------------------------------------------------------------
 # Message handler for coordinate collection
 # ---------------------------------------------------------------------------
+async def main_menu_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle text sent from MAIN_MENU state — clear old session and treat as new coordinate input."""
+    clear_session(update.effective_user.id)
+    return await coords_message_handler(update, context)
 
 async def coords_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle text messages while in COLLECTING_COORDS state."""
@@ -734,6 +738,7 @@ def main() -> None:
         states={
             MAIN_MENU: [
                 CallbackQueryHandler(main_menu_callback_router),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, main_menu_text_handler),
             ],
             COLLECTING_COORDS: [
                 MessageHandler(
@@ -750,6 +755,7 @@ def main() -> None:
         },
         fallbacks=[
             CommandHandler("start", start_handler),
+            CommandHandler("analyze", analyze_command),
         ],
         allow_reentry=True,
     )
