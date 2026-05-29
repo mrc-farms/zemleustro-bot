@@ -12,7 +12,7 @@ import asyncio
 import logging
 import re
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict, List, Optional
 
 from telegram import (
@@ -653,19 +653,18 @@ async def post_init(application: Application) -> None:
         logger.warning("set_chat_menu_button failed: %s", exc)
 
 
-def _start_health_server() -> None:
-    """Bind a port immediately so Render's free tier doesn't kill the process."""
-    try:
-        port = int(os.environ.get("PORT", 10000))
-        print(f"[health] binding port {port}", flush=True)
+class _HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
 
-        class _Handler(BaseHTTPRequestHandler):
-            def do_GET(self):
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(b"OK")
-            def log_message(self, *args):
-                pass
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
 
         server = HTTPServer(("0.0.0.0", port), _Handler)
         print(f"[health] listening on port {port}", flush=True)
@@ -685,9 +684,14 @@ def main() -> None:
     if not GROQ_API_KEY:
         logger.warning("GROQ_API_KEY не задан — AI-анализ будет недоступен.")
 
-    # Start health-check server in background thread BEFORE run_polling()
-    # so Render detects the open port and keeps the service alive.
-    threading.Thread(target=_start_health_server, daemon=True).start()
+        # Bind health-check port in the MAIN THREAD so Render detects it immediately.
+    # serve_forever() is delegated to a daemon thread after binding.
+    port = int(os.environ.get("PORT", 10000))
+    print(f"[health] binding port {port}", flush=True)
+    health_server = ThreadingHTTPServer(("0.0.0.0", port), _HealthHandler)
+    print(f"[health] listening on port {port}", flush=True)
+    logger.info("Health-check server listening on port %d", port)
+    threading.Thread(target=health_server.serve_forever, daemon=True).start()
 
     logger.info("Инициализация приложения...")
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
